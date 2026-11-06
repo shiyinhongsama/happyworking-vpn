@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#10110f" />
+    <title>HappyWorking VPN</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="app-header">
+        <div class="brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32" fill="none">
+              <path d="M7 9h7v7h11v7h-7v-7H7V9Z" fill="currentColor" />
+              <path d="M7 23v-7M25 9v7" stroke="currentColor" stroke-width="2" />
+            </svg>
+          </span>
+          <div>
+            <h1>HAPPYWORKING <span>VPN</span></h1>
+            <p>PRIVATE NETWORK CLIENT</p>
+          </div>
+        </div>
+        <div class="header-status">
+          <span class="header-caption">CHANNEL STATUS</span>
+          <div id="state-badge" class="state-badge" data-state="disconnected" aria-live="polite">
+            <span class="state-dot" aria-hidden="true"></span>
+            <span id="state-text">未连接</span>
+          </div>
+        </div>
+      </header>
+
+      <section class="workspace" aria-labelledby="connection-title">
+        <aside class="connection-rail" aria-label="连接进度">
+          <div class="rail-intro">
+            <p class="eyebrow">PRIVATE ACCESS</p>
+            <p class="rail-title">工作网络，<br />一线直达。</p>
+          </div>
+
+          <ol class="connection-steps">
+            <li data-step="gateway" class="is-active" aria-current="step">
+              <span class="step-number">01</span>
+              <div><strong>网关</strong><small>GATEWAY</small></div>
+              <span class="step-mark" aria-hidden="true"></span>
+            </li>
+            <li data-step="identity">
+              <span class="step-number">02</span>
+              <div><strong>身份</strong><small>IDENTITY</small></div>
+              <span class="step-mark" aria-hidden="true"></span>
+            </li>
+            <li data-step="tunnel">
+              <span class="step-number">03</span>
+              <div><strong>隧道</strong><small>TUNNEL</small></div>
+              <span class="step-mark" aria-hidden="true"></span>
+            </li>
+          </ol>
+
+          <div class="rail-note">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" />
+              <path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" />
+            </svg>
+            <p>本地优先，凭据受控<br /><span>LOCAL-FIRST SECURITY</span></p>
+          </div>
+        </aside>
+
+        <div class="connection-content">
+          <div class="content-heading">
+            <p id="stage-kicker" class="eyebrow">01 / GATEWAY</p>
+            <h2 id="connection-title">连接公司网关</h2>
+            <p id="stage-description">确认接入点与安全策略，建立一条可信的私有链路。</p>
+          </div>
+
+          <form id="config-form" class="connection-form config-form" novalidate>
+            <div class="field">
+              <label for="profile-name">配置名称</label>
+              <input id="profile-name" name="profileName" type="text" value="公司网络" maxlength="64" required />
+            </div>
+            <div class="field">
+              <label for="tls-policy">TLS 安全策略</label>
+              <select id="tls-policy" name="tlsPolicy">
+                <option value="modern">现代安全策略</option>
+                <option value="legacy" selected>旧版 H3C 网关（降低 OpenSSL 安全级别）</option>
+              </select>
+            </div>
+            <div class="gateway-group field-wide">
+              <div class="field">
+                <label for="gateway-host">网关地址</label>
+                <input id="gateway-host" name="gatewayHost" type="text" value="122.224.205.114" placeholder="vpn.example.com" autocomplete="off" spellcheck="false" required />
+              </div>
+              <div class="field field-port">
+                <label for="gateway-port">端口</label>
+                <input id="gateway-port" name="gatewayPort" type="number" value="4435" min="1" max="65535" required />
+              </div>
+            </div>
+            <div class="actions field-wide">
+              <button id="probe-button" class="button button-primary button-wide" type="submit">
+                <span>读取网关证书</span>
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10h11m-4-4 4 4-4 4" stroke="currentColor" stroke-width="1.5" /></svg>
+              </button>
+            </div>
+          </form>
+
+          <section id="certificate-section" class="step-section" aria-label="确认网关证书" hidden>
+            <div class="section-notice">
+              <span class="notice-icon" aria-hidden="true">!</span>
+              <p>请与公司管理员提供的指纹核对。只有完全一致时，才继续信任此证书。</p>
+            </div>
+            <dl class="certificate-details">
+              <div><dt>主题</dt><dd id="certificate-subject"></dd></div>
+              <div><dt>通用名称</dt><dd id="certificate-cn"></dd></div>
+              <div><dt>SHA-256</dt><dd id="certificate-fingerprint" class="fingerprint"></dd></div>
+            </dl>
+            <button id="trust-button" class="button button-primary button-wide" type="button">
+              <span>信任证书并继续</span>
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10h11m-4-4 4 4-4 4" stroke="currentColor" stroke-width="1.5" /></svg>
+            </button>
+          </section>
+
+          <form id="login-form" class="connection-form step-section" hidden>
+            <div class="field">
+              <label for="username">用户名</label>
+              <input id="username" type="text" autocomplete="username" required />
+            </div>
+            <div class="field">
+              <label for="password">密码</label>
+              <input id="password" type="password" autocomplete="current-password" required />
+            </div>
+            <div class="field field-wide">
+              <label for="verify-code">图形验证码 <span>如网关要求</span></label>
+              <input id="verify-code" type="text" autocomplete="off" />
+            </div>
+            <div class="field-wide remember-field">
+              <label for="remember-password">
+                <input id="remember-password" type="checkbox" />
+                记住密码
+                <span>存入系统密钥环</span>
+              </label>
+            </div>
+            <div class="actions field-wide">
+              <button id="login-button" class="button button-primary button-wide" type="submit">
+                <span>验证身份</span>
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 10h11m-4-4 4 4-4 4" stroke="currentColor" stroke-width="1.5" /></svg>
+              </button>
+            </div>
+          </form>
+
+          <form id="challenge-form" class="connection-form step-section" hidden>
+            <p id="challenge-message" class="field-wide challenge-message"></p>
+            <div class="field field-wide">
+              <label for="challenge-code">动态验证码</label>
+              <input id="challenge-code" type="text" autocomplete="one-time-code" inputmode="numeric" required />
+            </div>
+            <button class="button button-primary button-wide field-wide" type="submit">提交二次认证</button>
+          </form>
+
+          <section id="authenticated-section" class="step-section success-section" aria-label="认证成功" hidden>
+            <div class="identity-confirmed">
+              <span class="confirmation-mark" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none"><path d="m6 12 4 4 8-9" stroke="currentColor" stroke-width="1.5" /></svg>
+              </span>
+              <div><strong>身份已确认</strong><p id="tunnel-description">凭据已通过验证。建立 TUN 隧道后，即可访问公司内网。</p></div>
+            </div>
+            <div class="actions split-actions">
+              <button id="tunnel-button" class="button button-primary" type="button">建立安全隧道</button>
+              <button id="logout-button" class="button button-secondary" type="button">注销会话</button>
+            </div>
+          </section>
+
+          <section id="connected-section" class="step-section success-section connected-section" aria-label="隧道已连接" hidden>
+            <div class="tunnel-route" aria-hidden="true">
+              <span>THIS DEVICE</span>
+              <span class="tunnel-track"><i></i></span>
+              <span>COMPANY</span>
+            </div>
+            <div class="tunnel-endpoint">
+              <span>ASSIGNED IPV4 ADDRESS</span>
+              <strong id="tunnel-address">—</strong>
+              <span id="tunnel-interface">等待接口信息</span>
+            </div>
+            <button id="stop-tunnel-button" class="button button-secondary button-wide" type="button">断开隧道</button>
+          </section>
+
+          <div class="connection-footer">
+            <div id="status-message" class="status-message" role="status" aria-live="polite"></div>
+            <div id="error-message" class="error-message" role="alert" hidden></div>
+            <div class="bottom-actions">
+              <button id="cancel-button" class="button button-secondary reset-button" type="button">
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 6a6 6 0 1 1-1 6M5 6V2m0 4h4" stroke="currentColor" stroke-width="1.5" /></svg>
+                <span>重置连接</span>
+              </button>
+              <span>SESSION DATA / MEMORY ONLY</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <footer class="app-footer">
+        <span>RUST + TAURI / NATIVE PROTOCOL</span>
+        <span>HAPPYWORKING EDITION <i aria-hidden="true"></i> LOCAL CLIENT</span>
+      </footer>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

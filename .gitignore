@@ -1,0 +1,11 @@
+.analysis/
+node_modules/
+dist/
+target/
+src-tauri/target/
+.env
+.env.*
+*.pem
+*.p12
+*.pfx
+*.log

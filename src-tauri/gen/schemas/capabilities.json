@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"允许主窗口接收 VPN 状态事件","local":true,"windows":["main"],"permissions":["core:event:default"]}}

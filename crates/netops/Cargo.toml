@@ -1,0 +1,11 @@
+[package]
+name = "happyworking-vpn-netops"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+happyworking-vpn-core = { path = "../core" }
+serde.workspace = true
+libc.workspace = true
