@@ -183,6 +183,13 @@
           </section>
 
           <div class="connection-footer">
+            <div id="disconnect-banner" class="disconnect-banner" role="alert" hidden>
+              <div class="disconnect-copy">
+                <strong id="disconnect-title">隧道已断开</strong>
+                <p id="disconnect-detail"></p>
+              </div>
+              <button id="reconnect-button" class="button button-primary" type="button">立即重连</button>
+            </div>
             <div id="status-message" class="status-message" role="status" aria-live="polite"></div>
             <div id="error-message" class="error-message" role="alert" hidden></div>
             <div class="bottom-actions">

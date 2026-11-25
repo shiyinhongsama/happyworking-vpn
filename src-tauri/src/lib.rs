@@ -1,10 +1,7 @@
 pub mod credentials;
+mod tunnel;
 
-use std::{
-    process::Stdio,
-    sync::{Mutex, MutexGuard},
-    time::Duration,
-};
+use std::sync::{Mutex, MutexGuard};
 
 use happyworking_vpn_core::{
     ConnectionState, ErrorCode, GatewayConfig, SecretString, Session, VpnError,
@@ -16,10 +13,6 @@ use happyworking_vpn_sslvpn::{
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, RunEvent};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
-    process::{Child, Command},
-};
 use tokio_util::sync::CancellationToken;
 
 use crate::credentials::{CredentialKey, CredentialStore, KeyringStore};
@@ -35,19 +28,13 @@ struct PendingCredentials {
     remember: bool,
 }
 
-struct TunnelProcess {
-    child: Child,
-    input: Option<tokio::process::ChildStdin>,
-    stderr: tauri::async_runtime::JoinHandle<String>,
-}
-
 struct AppState {
     session: Mutex<Session>,
     pending: Mutex<Option<PendingGateway>>,
     capabilities: Mutex<Option<GatewayCapabilities>>,
     auth_session: Mutex<Option<AuthSession>>,
     challenge: Mutex<Option<Challenge>>,
-    tunnel_child: Mutex<Option<TunnelProcess>>,
+    supervisor: Mutex<Option<tunnel::Supervisor>>,
     credentials: KeyringStore,
     pending_credentials: Mutex<Option<PendingCredentials>>,
 }
@@ -60,7 +47,7 @@ impl AppState {
             capabilities: Mutex::new(None),
             auth_session: Mutex::new(None),
             challenge: Mutex::new(None),
-            tunnel_child: Mutex::new(None),
+            supervisor: Mutex::new(None),
             credentials: KeyringStore,
             pending_credentials: Mutex::new(None),
         }
@@ -272,7 +259,9 @@ async fn challenge_gateway(
 
 #[tauri::command]
 async fn logout_gateway(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), VpnError> {
-    stop_tunnel_process(&state).await?;
+    if let Some(Err(message)) = tunnel::stop(&state).await {
+        return Err(network_error(message));
+    }
     let session = lock(&state.auth_session).take();
     if let Some(session) = session {
         let pending = lock(&state.pending)
@@ -296,7 +285,9 @@ async fn logout_gateway(app: AppHandle, state: tauri::State<'_, AppState>) -> Re
 #[tauri::command]
 async fn cancel_gateway(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<(), VpnError> {
     lock(&state.session).cancel()?;
-    stop_tunnel_process(&state).await?;
+    if let Some(Err(message)) = tunnel::stop(&state).await {
+        return Err(network_error(message));
+    }
     *lock(&state.pending) = None;
     *lock(&state.capabilities) = None;
     *lock(&state.auth_session) = None;
@@ -311,68 +302,22 @@ async fn start_tunnel(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<AuthView, VpnError> {
-    if lock(&state.tunnel_child).is_some() {
+    if lock(&state.session).state() == ConnectionState::Connected {
         return Err(VpnError::new(ErrorCode::InvalidState, "隧道已在运行", &[]));
     }
-    let (config, certificate) = lock(&state.pending)
-        .as_ref()
-        .map(|pending| (pending.config.clone(), pending.certificate.clone()))
-        .ok_or_else(|| protocol_error("缺少网关配置"))?;
-    let session_cookie = lock(&state.auth_session)
-        .as_ref()
-        .map(|session| session.session_cookie().expose_secret().to_owned())
-        .ok_or_else(|| protocol_error("请先完成认证"))?;
-    let helper = std::env::current_exe()
-        .map_err(io_error)?
-        .with_file_name("happyworking-vpn-helper");
-    let mut child = Command::new("pkexec")
-        .arg(helper)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(io_error)?;
-    let request = serde_json::json!({
-        "host": config.host,
-        "port": config.port,
-        "verify_hostname": certificate.common_name,
-        "certificate_pem": String::from_utf8(certificate.certificate_pem).map_err(|_| protocol_error("证书 PEM 无效"))?,
-        "fingerprint": certificate.fingerprint.to_string(),
-        "legacy_tls": config.tls_policy == happyworking_vpn_core::TlsPolicy::Legacy,
-        "session_cookie": session_cookie,
-    });
-    let mut input = child
-        .stdin
-        .take()
-        .ok_or_else(|| protocol_error("helper 标准输入不可用"))?;
-    input
-        .write_all(format!("{request}\n").as_bytes())
-        .await
-        .map_err(io_error)?;
-    let mut stdout = BufReader::new(
-        child
-            .stdout
-            .take()
-            .ok_or_else(|| protocol_error("helper 标准输出不可用"))?,
-    )
-    .lines();
-    let stderr = BufReader::new(
-        child
-            .stderr
-            .take()
-            .ok_or_else(|| protocol_error("helper 标准错误不可用"))?,
-    )
-    .lines();
-    let stderr_task = tauri::async_runtime::spawn(read_helper_stderr(stderr));
-    *lock(&state.tunnel_child) = Some(TunnelProcess {
-        child,
-        input: Some(input),
-        stderr: stderr_task,
-    });
+    // 先收拾上一轮主管，避免两个 helper 同时改动网络配置。
+    if let Some(Err(message)) = tunnel::stop(&state).await {
+        return Err(network_error(message));
+    }
+    tunnel::tunnel_request(&state)?;
     {
         let session = lock(&state.session);
         match session.state() {
             ConnectionState::Disconnected | ConnectionState::Failed => session.connect()?,
+            ConnectionState::Reconnecting => {
+                session.fail()?;
+                session.connect()?;
+            }
             ConnectionState::Connecting => {}
             _ => {
                 return Err(VpnError::new(
@@ -385,47 +330,7 @@ async fn start_tunnel(
     }
     emit_state(&app, ConnectionState::Connecting)?;
     emit_stage(&app, "tunnel-starting")?;
-
-    tauri::async_runtime::spawn(async move {
-        let mut connected = false;
-        while let Ok(Some(line)) = stdout.next_line().await {
-            let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) else {
-                continue;
-            };
-            if event.get("kind").and_then(|kind| kind.as_str()) == Some("connected") {
-                let app_state = app.state::<AppState>();
-                if lock(&app_state.session).mark_connected().is_ok() {
-                    connected = true;
-                    let _ = emit_state(&app, ConnectionState::Connected);
-                    let _ = emit_stage(&app, "connected");
-                    let _ = app.emit("tunnel-ready", event);
-                }
-            }
-        }
-
-        let app_state = app.state::<AppState>();
-        let Some(mut process) = lock(&app_state.tunnel_child).take() else {
-            return;
-        };
-        process.input.take();
-        let status = process.child.wait().await.ok();
-        let details = process.stderr.await.unwrap_or_default();
-        let message = if details.is_empty() {
-            match status {
-                Some(status) => format!("隧道进程已退出（{status}），未提供错误详情"),
-                None => "隧道进程退出状态未知".to_owned(),
-            }
-        } else if connected {
-            format!("隧道已中断：{details}")
-        } else {
-            details
-        };
-        if lock(&app_state.session).fail().is_ok() {
-            let _ = emit_state(&app, ConnectionState::Failed);
-            let _ = emit_stage(&app, "authenticated");
-            let _ = app.emit("tunnel-error", message);
-        }
-    });
+    tunnel::start(&app, &state);
 
     Ok(AuthView {
         stage: "tunnel-starting".to_owned(),
@@ -438,7 +343,9 @@ async fn stop_tunnel(
     app: AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<AuthView, VpnError> {
-    stop_tunnel_process(&state).await?;
+    if let Some(Err(message)) = tunnel::stop(&state).await {
+        return Err(network_error(message));
+    }
     lock(&state.session).disconnect()?;
     emit_state(&app, lock(&state.session).state())?;
     emit_stage(&app, "authenticated")?;
@@ -446,54 +353,6 @@ async fn stop_tunnel(
         stage: "authenticated".to_owned(),
         message: "隧道已断开，认证会话仍保留".to_owned(),
     })
-}
-
-async fn stop_tunnel_process(state: &AppState) -> Result<(), VpnError> {
-    let Some(mut process) = lock(&state.tunnel_child).take() else {
-        return Ok(());
-    };
-    let disconnect = match process.input.as_mut() {
-        Some(input) => send_disconnect(input).await,
-        None => Ok(()),
-    };
-    process.input.take();
-    let status = match tokio::time::timeout(Duration::from_secs(5), process.child.wait()).await {
-        Ok(result) => result.map_err(io_error)?,
-        Err(_) => {
-            *lock(&state.tunnel_child) = Some(process);
-            return Err(network_error("helper 清理超时，请重试；网络回滚尚未完成"));
-        }
-    };
-    let details = process.stderr.await.unwrap_or_default();
-    if !status.success() {
-        let message = if details.is_empty() {
-            format!("helper 断开失败（{status}）")
-        } else {
-            format!("helper 断开失败：{details}")
-        };
-        return Err(network_error(message));
-    }
-    disconnect
-}
-
-async fn send_disconnect<W: tokio::io::AsyncWrite + Unpin>(input: &mut W) -> Result<(), VpnError> {
-    input.write_all(b"disconnect\n").await.map_err(io_error)
-}
-
-async fn read_helper_stderr(
-    mut stderr: tokio::io::Lines<BufReader<tokio::process::ChildStderr>>,
-) -> String {
-    let mut messages = Vec::new();
-    while let Ok(Some(line)) = stderr.next_line().await {
-        let line = line.trim();
-        if !line.is_empty() {
-            if messages.len() == 4 {
-                messages.remove(0);
-            }
-            messages.push(line.chars().take(256).collect::<String>());
-        }
-    }
-    messages.join("；")
 }
 
 async fn persist_pending_credentials(state: &AppState) -> Result<Option<bool>, VpnError> {
@@ -568,8 +427,22 @@ fn tls_options(
 }
 
 fn emit_state(app: &AppHandle, state: ConnectionState) -> Result<(), VpnError> {
+    update_window_title(app, state);
     app.emit("vpn-state", state)
         .map_err(|error| VpnError::new(ErrorCode::InternalError, error.to_string(), &[]))
+}
+
+/// 窗口标题带上连接状态：应用退到后台时，断线也能一眼看见。
+fn update_window_title(app: &AppHandle, state: ConnectionState) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    let title = match state {
+        ConnectionState::Reconnecting => "HappyWorking VPN · 连接中断，正在重连",
+        ConnectionState::Failed => "HappyWorking VPN · 连接已断开",
+        _ => "HappyWorking VPN",
+    };
+    let _ = window.set_title(title);
 }
 
 fn emit_stage(app: &AppHandle, stage: &str) -> Result<(), VpnError> {
@@ -581,10 +454,6 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
-fn io_error(error: std::io::Error) -> VpnError {
-    VpnError::new(ErrorCode::NetworkUnavailable, error.to_string(), &[])
 }
 
 fn network_error(message: impl Into<String>) -> VpnError {
@@ -621,27 +490,10 @@ pub fn run() {
     app.run(|app, event| {
         if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
             let state = app.state::<AppState>();
-            drop(state.tunnel_child.lock().unwrap().take());
+            if let Some(supervisor) = lock(&state.supervisor).take() {
+                supervisor.cancel();
+            }
             let _ = state.session.lock().map(|session| session.cancel());
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn disconnect_uses_helper_control_channel() {
-        let (mut writer, reader) = tokio::io::duplex(64);
-        let request = tokio::spawn(async move { send_disconnect(&mut writer).await });
-        let mut command = String::new();
-        BufReader::new(reader)
-            .read_line(&mut command)
-            .await
-            .unwrap();
-
-        assert_eq!(command, "disconnect\n");
-        request.await.unwrap().unwrap();
-    }
 }

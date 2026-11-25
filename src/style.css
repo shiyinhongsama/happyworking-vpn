@@ -13,6 +13,7 @@
   --accent-hover: #e3ff91;
   --accent-text: #171c0b;
   --danger: #ff9f92;
+  --warning: #f2c14e;
   --mono: "Noto Sans Mono CJK SC", "SFMono-Regular", Consolas, monospace;
 }
 
@@ -156,6 +157,10 @@ h1 span {
 
 .state-badge[data-state="failed"] {
   color: var(--danger);
+}
+
+.state-badge[data-state="reconnecting"] {
+  color: var(--warning);
 }
 
 .workspace {
@@ -694,6 +699,36 @@ input[type="checkbox"] {
   color: var(--danger);
 }
 
+.disconnect-banner {
+  margin-bottom: 0.75rem;
+  padding: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border: 1px solid var(--danger);
+  border-left-width: 2px;
+  background: var(--surface-raised);
+}
+
+.disconnect-copy strong {
+  display: block;
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+
+.disconnect-copy p {
+  margin-top: 0.25rem;
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+.disconnect-banner .button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .bottom-actions {
   min-height: 2rem;
   display: flex;
@@ -817,6 +852,11 @@ input[type="checkbox"] {
   .brand p,
   .bottom-actions > span {
     display: none;
+  }
+
+  .disconnect-banner {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .state-badge {

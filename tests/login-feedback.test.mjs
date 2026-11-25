@@ -1,177 +1,34 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { fileURLToPath } from "node:url";
 
-const project = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const artifacts = path.join(project, ".analysis");
+import { artifacts, openApp, tauriMock, waitFor } from "./harness.mjs";
 
-async function waitFor(check, description) {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    try {
-      if (await check()) return;
-    } catch {
-      // The browser or server may not be ready yet.
+const mock = tauriMock({
+  setup: "let loginAttempt = 0;",
+  commands: `
+    if (command === "probe_gateway") return Promise.resolve({
+      fingerprint: "AA:BB", subject: "测试网关", commonName: "gateway.test"
+    });
+    if (command === "trust_and_discover") return Promise.resolve({
+      stage: "ready", message: "网关能力发现完成，可以登录"
+    });
+    if (command === "load_saved_credential") return Promise.resolve({ password: null });
+    if (command === "login_gateway") {
+      loginAttempt += 1;
+      if (loginAttempt === 1) return Promise.reject({ message: "模拟：账号或密码错误" });
+      return new Promise((resolve) => {
+        window.finishTestLogin = () => resolve({
+          stage: "authenticated", message: "认证成功；隧道尚未建立"
+        });
+      });
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  throw new Error(`等待超时：${description}`);
-}
-
-class DevTools {
-  constructor(url) {
-    this.socket = new WebSocket(url);
-    this.nextId = 1;
-    this.pending = new Map();
-    this.socket.addEventListener("message", ({ data }) => {
-      const message = JSON.parse(data);
-      const pending = this.pending.get(message.id);
-      if (!pending) return;
-      this.pending.delete(message.id);
-      if (message.error) pending.reject(new Error(message.error.message));
-      else pending.resolve(message.result);
-    });
-  }
-
-  async open() {
-    await new Promise((resolve, reject) => {
-      this.socket.addEventListener("open", resolve, { once: true });
-      this.socket.addEventListener("error", reject, { once: true });
-    });
-  }
-
-  send(method, params = {}) {
-    const id = this.nextId++;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.socket.send(JSON.stringify({ id, method, params }));
-    });
-  }
-
-  async evaluate(expression) {
-    const result = await this.send("Runtime.evaluate", {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    });
-    if (result.exceptionDetails) {
-      throw new Error(result.exceptionDetails.text);
-    }
-    return result.result.value;
-  }
-
-  close() {
-    this.socket.close();
-  }
-}
+  `,
+});
 
 test("登录步骤和结果在当前窗口清晰可见", async (t) => {
-  await mkdir(artifacts, { recursive: true });
-  const profile = await mkdtemp(path.join(artifacts, "login-feedback-test-"));
-  const server = spawn(
-    process.execPath,
-    [path.join(project, "node_modules/vite/bin/vite.js"), "--host", "127.0.0.1", "--port", "1421", "--strictPort"],
-    { cwd: project, stdio: "ignore" },
-  );
-  let browser;
-  let devtools;
-
-  t.after(async () => {
-    devtools?.close();
-    const waitForExit = (child) => child && child.exitCode === null && child.signalCode === null
-      ? new Promise((resolve) => child.once("exit", resolve))
-      : Promise.resolve();
-    const browserExited = waitForExit(browser);
-    const serverExited = waitForExit(server);
-    browser?.kill("SIGTERM");
-    server.kill("SIGTERM");
-    await Promise.all([browserExited, serverExited]);
-    await rm(profile, { recursive: true, force: true });
-  });
-
-  await waitFor(async () => (await fetch("http://127.0.0.1:1421")).ok, "Vite");
-  browser = spawn("chromium", [
-    "--headless",
-    "--no-sandbox",
-    "--disable-gpu",
-    "--no-first-run",
-    "--remote-debugging-port=0",
-    `--user-data-dir=${profile}`,
-    "--window-size=920,640",
-    "about:blank",
-  ], { stdio: "ignore" });
-
-  let debuggingPort;
-  await waitFor(async () => {
-    debuggingPort = (await readFile(path.join(profile, "DevToolsActivePort"), "utf8")).split("\n")[0];
-    return Boolean(debuggingPort);
-  }, "Chromium DevTools");
-  const targets = await (await fetch(`http://127.0.0.1:${debuggingPort}/json/list`)).json();
-  devtools = new DevTools(targets.find((target) => target.type === "page").webSocketDebuggerUrl);
-  await devtools.open();
-  await devtools.send("Page.enable");
-  await devtools.send("Runtime.enable");
-  await devtools.send("Emulation.setDeviceMetricsOverride", {
-    width: 920,
-    height: 640,
-    deviceScaleFactor: 1,
-    mobile: false,
-  });
-  await devtools.send("Page.addScriptToEvaluateOnNewDocument", {
-    source: `
-      let callbackId = 0;
-      let loginAttempt = 0;
-      const callbacks = new Map();
-      const callbackEvents = new Map();
-      window.__TAURI_INTERNALS__ = {
-        transformCallback(callback) {
-          const id = ++callbackId;
-          callbacks.set(id, callback);
-          return id;
-        },
-        unregisterCallback(id) { callbacks.delete(id); callbackEvents.delete(id); },
-        invoke(command, args) {
-          if (command === "plugin:event|listen") {
-            callbackEvents.set(args.handler, args.event);
-            return Promise.resolve(++callbackId);
-          }
-          if (command === "plugin:event|unlisten") return Promise.resolve(null);
-          if (command === "get_core_state") return Promise.resolve("disconnected");
-          if (command === "probe_gateway") return Promise.resolve({
-            fingerprint: "AA:BB", subject: "测试网关", commonName: "gateway.test"
-          });
-          if (command === "trust_and_discover") return Promise.resolve({
-            stage: "ready", message: "网关能力发现完成，可以登录"
-          });
-          if (command === "load_saved_credential") return Promise.resolve({ password: null });
-          if (command === "login_gateway") {
-            loginAttempt += 1;
-            if (loginAttempt === 1) return Promise.reject({ message: "模拟：账号或密码错误" });
-            return new Promise((resolve) => {
-              window.finishTestLogin = () => resolve({
-                stage: "authenticated", message: "认证成功；隧道尚未建立"
-              });
-            });
-          }
-          return Promise.reject(new Error("未模拟的命令：" + command));
-        }
-      };
-      window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
-      window.emitTestEvent = (event, payload) => {
-        for (const [id, callback] of callbacks) {
-          if (callbackEvents.get(id) === event) callback({ event, payload });
-        }
-      };
-    `,
-  });
-  await devtools.send("Page.navigate", { url: "http://127.0.0.1:1421" });
-  await waitFor(
-    () => devtools.evaluate('document.readyState === "complete" && document.querySelector("#state-text").textContent === "未连接"'),
-    "应用初始化",
-  );
+  const devtools = await openApp(t, { mock, port: 1421 });
 
   const initialDisplay = await devtools.evaluate(`Object.fromEntries(
     ["login-form", "challenge-form", "authenticated-section", "connected-section"]
@@ -189,8 +46,11 @@ test("登录步骤和结果在当前窗口清晰可见", async (t) => {
   );
   if (process.env.UI_SCREENSHOT) {
     const screenshot = await devtools.send("Page.captureScreenshot", { format: "png" });
-    const path = process.env.UI_SCREENSHOT.replace(/\.png$/, "-initial.png");
-    await writeFile(path, Buffer.from(screenshot.data, "base64"));
+    const file = path.join(
+      artifacts,
+      path.basename(process.env.UI_SCREENSHOT, ".png") + "-initial.png",
+    );
+    await writeFile(file, Buffer.from(screenshot.data, "base64"));
   }
 
   await devtools.evaluate(`document.getElementById("gateway-host").value = "gateway.test";
@@ -268,7 +128,11 @@ test("登录步骤和结果在当前窗口清晰可见", async (t) => {
 
   if (process.env.UI_SCREENSHOT) {
     const screenshot = await devtools.send("Page.captureScreenshot", { format: "png" });
-    await writeFile(process.env.UI_SCREENSHOT, Buffer.from(screenshot.data, "base64"));
+    const file = path.join(
+      artifacts,
+      path.basename(process.env.UI_SCREENSHOT, ".png") + "-connected.png",
+    );
+    await writeFile(file, Buffer.from(screenshot.data, "base64"));
   }
 
   await devtools.send("Emulation.setDeviceMetricsOverride", {
@@ -280,7 +144,10 @@ test("登录步骤和结果在当前窗口清晰可见", async (t) => {
   assert.equal(await devtools.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
   if (process.env.UI_SCREENSHOT) {
     const screenshot = await devtools.send("Page.captureScreenshot", { format: "png" });
-    const path = process.env.UI_SCREENSHOT.replace(/\.png$/, "-mobile.png");
-    await writeFile(path, Buffer.from(screenshot.data, "base64"));
+    const file = path.join(
+      artifacts,
+      path.basename(process.env.UI_SCREENSHOT, ".png") + "-mobile.png",
+    );
+    await writeFile(file, Buffer.from(screenshot.data, "base64"));
   }
 });

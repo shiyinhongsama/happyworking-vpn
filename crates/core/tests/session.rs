@@ -65,6 +65,43 @@ fn a_failed_connection_can_be_retried() {
     assert_eq!(session.state(), ConnectionState::Connecting);
 }
 
+#[test]
+fn an_interrupted_tunnel_enters_recovery_and_can_recover() {
+    let session = Session::new(8).unwrap();
+    session.connect().unwrap();
+    session.mark_connected().unwrap();
+
+    session.mark_reconnecting().unwrap();
+    assert_eq!(session.state(), ConnectionState::Reconnecting);
+
+    session.mark_connected().unwrap();
+    assert_eq!(session.state(), ConnectionState::Connected);
+}
+
+#[test]
+fn recovery_can_end_in_failure() {
+    let session = Session::new(8).unwrap();
+    session.connect().unwrap();
+    session.mark_connected().unwrap();
+    session.mark_reconnecting().unwrap();
+
+    session.fail().unwrap();
+
+    assert_eq!(session.state(), ConnectionState::Failed);
+}
+
+#[test]
+fn the_user_can_stop_a_recovery_in_progress() {
+    let session = Session::new(8).unwrap();
+    session.connect().unwrap();
+    session.mark_connected().unwrap();
+    session.mark_reconnecting().unwrap();
+
+    session.disconnect().unwrap();
+
+    assert_eq!(session.state(), ConnectionState::Disconnected);
+}
+
 #[tokio::test]
 async fn event_delivery_is_bounded() {
     let session = Session::new(1).unwrap();

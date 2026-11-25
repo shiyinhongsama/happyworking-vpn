@@ -102,6 +102,13 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
+            // 结构化错误走标准输出，父进程据此判断是否值得自动重试。
+            let status = serde_json::json!({
+                "kind": "error",
+                "code": error.code(),
+                "message": error.message(),
+            });
+            println!("{status}");
             eprintln!("{error}");
             ExitCode::FAILURE
         }

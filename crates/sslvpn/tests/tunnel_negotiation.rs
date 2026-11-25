@@ -40,6 +40,13 @@ fn certificate() -> (PKey<openssl::pkey::Private>, X509) {
                 .unwrap(),
         )
         .unwrap();
+    // OpenSSL 3 只拿 SAN 里的 dNSName 做主机名校验，CN 不再算数。
+    let context = builder.x509v3_context(None, None);
+    let mut alternative = openssl::x509::extension::SubjectAlternativeName::new();
+    alternative.dns("localhost");
+    builder
+        .append_extension(alternative.build(&context).unwrap())
+        .unwrap();
     builder.sign(&key, MessageDigest::sha256()).unwrap();
     (key, builder.build())
 }

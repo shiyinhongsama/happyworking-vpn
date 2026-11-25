@@ -7,6 +7,8 @@ pub enum ConnectionState {
     Connecting,
     Connected,
     Disconnecting,
+    /// 隧道意外中断，正在尝试自动恢复。
+    Reconnecting,
     Failed,
 }
 

@@ -6,6 +6,7 @@ type ConnectionState =
   | "connecting"
   | "connected"
   | "disconnecting"
+  | "reconnecting"
   | "failed";
 
 type CertificateView = {
@@ -19,6 +20,12 @@ type AuthView = {
   message: string;
 };
 
+type TunnelLost = {
+  reason: string;
+  attempt: number;
+  willRetry: boolean;
+};
+
 type VpnError = {
   code: string;
   message: string;
@@ -29,6 +36,7 @@ const stateText: Record<ConnectionState, string> = {
   connecting: "正在连接",
   connected: "已连接",
   disconnecting: "正在断开",
+  reconnecting: "正在重连",
   failed: "连接失败",
 };
 
@@ -39,6 +47,7 @@ const stageText: Record<string, string> = {
   authenticated: "认证成功",
   "tunnel-starting": "正在建立隧道",
   connected: "已连接",
+  "tunnel-lost": "连接已断开",
   disconnected: "未连接",
 };
 
@@ -99,6 +108,12 @@ const stageCopy: Record<string, {
     description: "公司内网流量现在通过加密隧道传输。",
     step: 2,
   },
+  "tunnel-lost": {
+    kicker: "03 / OFFLINE",
+    title: "隧道已断开",
+    description: "连接中断，客户端正在尝试恢复；恢复失败时可手动重连或重新登录。",
+    step: 2,
+  },
 };
 
 function element<T extends HTMLElement>(id: string): T {
@@ -137,8 +152,11 @@ function setStage(stage: string): void {
   element("stage-kicker").textContent = copy.kicker;
   element("connection-title").textContent = copy.title;
   element("stage-description").textContent = copy.description;
-  stateBadge.dataset.state = stage === "authenticated" ? "connected" : stage;
-  stateLabel.textContent = stageText[stage] ?? stateText.disconnected;
+  // 断线阶段由连接状态说话：徽标颜色和文案交给 vpn-state 事件。
+  if (stage !== "tunnel-lost") {
+    stateBadge.dataset.state = stage === "authenticated" ? "connected" : stage;
+    stateLabel.textContent = stageText[stage] ?? stateText.disconnected;
+  }
 
   document.querySelectorAll<HTMLLIElement>("[data-step]").forEach((step, index) => {
     step.classList.toggle("is-active", index === copy.step);
@@ -153,8 +171,7 @@ function setStage(stage: string): void {
   }
 }
 
-function showError(error: unknown): void {
-  const message = typeof error === "object" && error !== null && "message" in error
+function showError(error: unknown): void {  const message = typeof error === "object" && error !== null && "message" in error
     ? String((error as VpnError).message)
     : String(error);
   errorMessage.textContent = message;
@@ -190,6 +207,21 @@ function showAuthView(view: AuthView): void {
     ? "success"
     : "pending";
   setStage(view.stage);
+}
+
+/// 断线横幅：把原因和后续动作说清楚，不让用户猜。
+function showDisconnectBanner(lost: TunnelLost): void {
+  element<HTMLElement>("disconnect-title").textContent = lost.willRetry
+    ? "隧道已断开，正在自动重连"
+    : "隧道已断开，自动重连失败";
+  element<HTMLElement>("disconnect-detail").textContent = lost.willRetry
+    ? `第 ${lost.attempt} 次重连尝试中。${lost.reason}`
+    : `${lost.reason}。请检查网络后点“立即重连”；会话失效时用“重置连接”重新登录。`;
+  element<HTMLDivElement>("disconnect-banner").hidden = false;
+}
+
+function hideDisconnectBanner(): void {
+  element<HTMLDivElement>("disconnect-banner").hidden = true;
 }
 
 async function loadSavedPassword(): Promise<void> {
@@ -293,6 +325,13 @@ element("stop-tunnel-button").addEventListener("click", () => {
   }, "正在断开隧道并清理网络配置…");
 });
 
+element("reconnect-button").addEventListener("click", () => {
+  void perform(async () => {
+    hideDisconnectBanner();
+    showAuthView(await invoke<AuthView>("start_tunnel"));
+  }, "正在重新建立隧道…");
+});
+
 element("logout-button").addEventListener("click", () => {
   void perform(async () => {
     await invoke("logout_gateway");
@@ -321,6 +360,9 @@ async function initialize(): Promise<void> {
   });
   const unlistenStage = await listen<string>("vpn-stage", (event) => {
     setStage(event.payload);
+    if (event.payload === "connected" || event.payload === "disconnected") {
+      hideDisconnectBanner();
+    }
   });
   const unlistenTunnel = await listen<{ interface: string; address: string }>(
     "tunnel-ready",
@@ -329,17 +371,17 @@ async function initialize(): Promise<void> {
       element("tunnel-interface").textContent = `TUN / ${event.payload.interface}`;
       statusMessage.textContent = "隧道已连接，可以访问公司内网";
       statusMessage.dataset.tone = "success";
+      hideDisconnectBanner();
     },
   );
-  const unlistenTunnelError = await listen<string>("tunnel-error", (event) => {
-    setStage("authenticated");
-    showError(event.payload);
+  const unlistenLost = await listen<TunnelLost>("tunnel-lost", (event) => {
+    showDisconnectBanner(event.payload);
   });
   window.addEventListener("beforeunload", () => {
     unlistenState();
     unlistenStage();
     unlistenTunnel();
-    unlistenTunnelError();
+    unlistenLost();
   });
 
   renderState(await invoke<ConnectionState>("get_core_state"));

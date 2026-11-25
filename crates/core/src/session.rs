@@ -45,6 +45,11 @@ impl Session {
         self.transition(ConnectionState::Connected).map(|_| ())
     }
 
+    /// 隧道意外中断后进入自动恢复过程。
+    pub fn mark_reconnecting(&self) -> Result<(), VpnError> {
+        self.transition(ConnectionState::Reconnecting).map(|_| ())
+    }
+
     pub fn fail(&self) -> Result<(), VpnError> {
         self.transition(ConnectionState::Failed).map(|_| ())
     }
@@ -52,7 +57,9 @@ impl Session {
     pub fn disconnect(&self) -> Result<(), VpnError> {
         match self.state() {
             ConnectionState::Disconnected => return Ok(()),
-            ConnectionState::Connecting | ConnectionState::Connected => {
+            ConnectionState::Connecting
+            | ConnectionState::Connected
+            | ConnectionState::Reconnecting => {
                 self.transition(ConnectionState::Disconnecting)?;
             }
             ConnectionState::Failed | ConnectionState::Disconnecting => {}
@@ -107,13 +114,21 @@ fn is_allowed(from: ConnectionState, to: ConnectionState) -> bool {
             | (ConnectionState::Connecting, ConnectionState::Connected)
             | (ConnectionState::Connecting, ConnectionState::Disconnecting)
             | (ConnectionState::Connecting, ConnectionState::Failed)
+            | (ConnectionState::Connecting, ConnectionState::Reconnecting)
             | (ConnectionState::Connected, ConnectionState::Disconnecting)
             | (ConnectionState::Connected, ConnectionState::Failed)
+            | (ConnectionState::Connected, ConnectionState::Reconnecting)
             | (
                 ConnectionState::Disconnecting,
                 ConnectionState::Disconnected
             )
             | (ConnectionState::Disconnecting, ConnectionState::Failed)
+            | (ConnectionState::Reconnecting, ConnectionState::Connected)
+            | (
+                ConnectionState::Reconnecting,
+                ConnectionState::Disconnecting
+            )
+            | (ConnectionState::Reconnecting, ConnectionState::Failed)
             | (ConnectionState::Failed, ConnectionState::Connecting)
             | (ConnectionState::Failed, ConnectionState::Disconnected)
     )
