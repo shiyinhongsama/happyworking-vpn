@@ -18,7 +18,7 @@ use tokio_util::sync::CancellationToken;
 struct HelperRequest {
     host: String,
     port: u16,
-    verify_hostname: String,
+    certificate_name: String,
     certificate_pem: String,
     fingerprint: String,
     legacy_tls: bool,
@@ -129,7 +129,7 @@ async fn run() -> Result<(), VpnError> {
         host: request.host.clone(),
         port: request.port,
         server_name: request.host.clone(),
-        verify_hostname: request.verify_hostname,
+        certificate_name: request.certificate_name,
         certificate_pem: request.certificate_pem.into_bytes(),
         fingerprint: request
             .fingerprint

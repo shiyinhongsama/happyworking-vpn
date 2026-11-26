@@ -417,7 +417,7 @@ pub fn tunnel_request(state: &AppState) -> Result<serde_json::Value, VpnError> {
     Ok(serde_json::json!({
         "host": config.host,
         "port": config.port,
-        "verify_hostname": certificate.common_name,
+        "certificate_name": certificate.common_name,
         "certificate_pem": String::from_utf8(certificate.certificate_pem)
             .map_err(|_| protocol_error("证书 PEM 无效"))?,
         "fingerprint": certificate.fingerprint.to_string(),

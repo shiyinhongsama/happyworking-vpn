@@ -24,7 +24,7 @@ async fn run() -> Result<happyworking_vpn_sslvpn::GatewayCapabilities, String> {
     let mut ca = None;
     let mut fingerprint = None;
     let mut server_name = None;
-    let mut verify_hostname = None;
+    let mut certificate_name = None;
     let mut policy = TlsPolicy::Modern;
     let mut arguments = env::args().skip(1);
 
@@ -41,7 +41,7 @@ async fn run() -> Result<happyworking_vpn_sslvpn::GatewayCapabilities, String> {
             "--ca" => ca = arguments.next(),
             "--fingerprint" => fingerprint = arguments.next(),
             "--server-name" => server_name = arguments.next(),
-            "--verify-hostname" => verify_hostname = arguments.next(),
+            "--certificate-name" => certificate_name = arguments.next(),
             "--legacy" => policy = TlsPolicy::Legacy,
             _ => return Err(format!("未知参数：{argument}")),
         }
@@ -55,7 +55,7 @@ async fn run() -> Result<happyworking_vpn_sslvpn::GatewayCapabilities, String> {
         host,
         port,
         server_name,
-        verify_hostname: verify_hostname.ok_or("需要 --verify-hostname")?,
+        certificate_name: certificate_name.ok_or("需要 --certificate-name")?,
         certificate_pem: fs::read(ca.ok_or("需要 --ca")?).map_err(|error| error.to_string())?,
         fingerprint: fingerprint
             .ok_or("需要 --fingerprint")?

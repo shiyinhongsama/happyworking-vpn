@@ -415,10 +415,10 @@ fn tls_options(
         host: config.host.clone(),
         port: config.port,
         server_name: config.host,
-        verify_hostname: certificate
+        certificate_name: certificate
             .common_name
             .clone()
-            .ok_or_else(|| protocol_error("网关证书缺少 CN，无法执行主机名校验"))?,
+            .ok_or_else(|| protocol_error("网关证书缺少 CN，无法确定 SNI"))?,
         certificate_pem: certificate.certificate_pem,
         fingerprint: certificate.fingerprint,
         policy: config.tls_policy,

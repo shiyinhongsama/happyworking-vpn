@@ -57,7 +57,7 @@ fn tls_options(port: u16, certificate: &X509) -> TlsOptions {
         host: "127.0.0.1".to_owned(),
         port,
         server_name: "localhost".to_owned(),
-        verify_hostname: "localhost".to_owned(),
+        certificate_name: "localhost".to_owned(),
         certificate_pem: certificate.to_pem().unwrap(),
         fingerprint: digest
             .iter()

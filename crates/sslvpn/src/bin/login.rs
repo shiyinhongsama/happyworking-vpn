@@ -64,7 +64,7 @@ async fn run() -> Result<String, String> {
         host: host.clone(),
         port,
         server_name: host,
-        verify_hostname: certificate.common_name.clone().ok_or("网关证书缺少 CN")?,
+        certificate_name: certificate.common_name.clone().ok_or("网关证书缺少 CN")?,
         certificate_pem: certificate.certificate_pem,
         fingerprint: expected,
         policy,
